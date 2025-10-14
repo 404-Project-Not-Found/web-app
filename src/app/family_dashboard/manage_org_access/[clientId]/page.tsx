@@ -1,35 +1,24 @@
 /**
  * File path: /family_dashboard/manage_org_access/[clientId]/page.tsx
- * Authors: Qingyue Zhao & Denise Alexander
- * Last Update: 2025-10-07
+ * Mode: Dual (mock = pure-frontend; real = call backend)
  *
- * Last Updated by Denise Alexander - 7/10/2025: back-end integrated to implement
- * organisation access workflow.
- *
- * NOTE:
- * This page has been refactored to allow families to select the active client
- * directly from the shared DashboardChrome banner dropdown, similar to other
- * family pages. The backend API will need to be adjusted accordingly since
- * it previously relied on a clientId parameter from the dynamic route.
- *
- * Changes:
- * - Removed [clientId] dynamic routing, page can be accessed directly.
- * - Uses DashboardChrome with a client dropdown for selection.
- * - On client change, updates activeClient in storage and reloads orgs.
- * - Organisation access workflow is still stubbed with mock data (MOCK_ORGS);
- *   backend fetch should be integrated once available.
- *
- * Old files move to: app/old_organisation_access
- *
+ * - Mock mode (NEXT_PUBLIC_ENABLE_MOCK=1):
+ *     * Seed from mockApi.MOCK_ORGS
+ *     * Actions (Approve/Reject/Revoke) only update local state
+ *     * No fetch, no persistence
+ * - Real mode:
+ *     * GET/POST to API routes
+ *     * After POST, re-fetch list
  */
 
 'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
-import DashboardChrome from '@/components/top_menu/client_schedule';
 import { useRouter } from 'next/navigation';
+import DashboardChrome from '@/components/top_menu/client_schedule';
 import { useActiveClient } from '@/context/ActiveClientContext';
 import { getClients, type Client as ApiClient } from '@/lib/data';
+import { isMock, MOCK_ORGS } from '@/lib/mock/mockApi';
 
 const colors = {
   pageBg: '#ffd9b3',
@@ -39,12 +28,12 @@ const colors = {
 };
 
 type ClientLite = { id: string; name: string };
+type OrgStatus = 'approved' | 'pending' | 'revoked';
+type Organisation = { id: string; name: string; status: OrgStatus };
 
-type Organisation = {
-  id: string;
-  name: string;
-  status: 'approved' | 'pending' | 'revoked';
-};
+// Map mockApi status -> UI status (active → approved)
+const toUI = (s: 'active' | 'pending' | 'revoked'): OrgStatus =>
+  s === 'active' ? 'approved' : s;
 
 export default function ManageOrganisationAccessPage() {
   const router = useRouter();
@@ -53,12 +42,12 @@ export default function ManageOrganisationAccessPage() {
   // ---------- Clients ----------
   const [clients, setClients] = useState<ClientLite[]>([]);
 
-  // ---------- Organisations ----------
+  // ---------- Orgs ----------
   const [orgs, setOrgs] = useState<Organisation[]>([]);
   const [loading, setLoading] = useState(false);
   const [errorText, setErrorText] = useState<string | null>(null);
 
-  // Load clients and restore active selection
+  // Load clients
   useEffect(() => {
     (async () => {
       try {
@@ -71,7 +60,7 @@ export default function ManageOrganisationAccessPage() {
     })();
   }, []);
 
-  // Load organisation access list for current client
+  // Load orgs for current client
   useEffect(() => {
     if (!activeClient?.id) {
       setOrgs([]);
@@ -79,20 +68,31 @@ export default function ManageOrganisationAccessPage() {
       setLoading(false);
       return;
     }
-
     setLoading(true);
     setErrorText(null);
 
+    if (isMock) {
+      // --- Mock: seed locally, no network ---
+      const seeded =
+        (MOCK_ORGS ?? []).map((o) => ({
+          id: o.id,
+          name: o.name,
+          status: toUI(o.status),
+        })) as Organisation[];
+      setOrgs(seeded);
+      setLoading(false);
+      return;
+    }
+
+    // --- Real: fetch from API ---
     (async () => {
       try {
         const res = await fetch(
           `/api/v1/clients/${activeClient.id}/organisations`,
           { cache: 'no-store' }
         );
-        if (!res.ok) {
-          throw new Error('Failed to fetch organisations.');
-        }
-        const data = await res.json();
+        if (!res.ok) throw new Error('Failed to fetch organisations.');
+        const data = (await res.json()) as Organisation[];
         setOrgs(data);
       } catch (err) {
         console.error(err);
@@ -102,18 +102,29 @@ export default function ManageOrganisationAccessPage() {
         setLoading(false);
       }
     })();
-  }, [activeClient]);
+  }, [activeClient?.id]);
 
-  // Update org status (approve/reject/revoke)
-  async function updateOrgStatus(
-    orgId: string,
-    action: 'approve' | 'reject' | 'revoke'
-  ) {
+  // ---- Actions ----
+  async function updateOrgStatus(orgId: string, action: 'approve' | 'reject' | 'revoke') {
     if (!activeClient?.id) return;
 
+    if (isMock) {
+      // Mock: local-only transition
+      setOrgs((prev) =>
+        prev.map((o) => {
+          if (o.id !== orgId) return o;
+          if (action === 'approve') return { ...o, status: 'approved' };
+          if (action === 'revoke') return { ...o, status: 'revoked' };
+          if (action === 'reject') return { ...o, status: 'revoked' }; // or remove if desired
+          return o;
+        })
+      );
+      return;
+    }
+
+    // Real: POST then re-fetch
     setLoading(true);
     setErrorText(null);
-
     try {
       const res = await fetch(
         `/api/v1/clients/${activeClient.id}/organisations/${orgId}`,
@@ -123,19 +134,15 @@ export default function ManageOrganisationAccessPage() {
           body: JSON.stringify({ action }),
         }
       );
-      if (!res.ok) {
-        throw new Error('Failed to update organisation.');
-      }
+      if (!res.ok) throw new Error('Failed to update organisation.');
 
-      const orgRes = await fetch(
+      const listRes = await fetch(
         `/api/v1/clients/${activeClient.id}/organisations`,
         { cache: 'no-store' }
       );
-      if (!orgRes.ok) {
-        throw new Error('Failed to fetch organisations.');
-      }
-      const orgData = await orgRes.json();
-      setOrgs(orgData);
+      if (!listRes.ok) throw new Error('Failed to fetch organisations.');
+      const data = (await listRes.json()) as Organisation[];
+      setOrgs(data);
     } catch (err) {
       console.error(err);
       setErrorText('Failed to update organisation.');
@@ -148,7 +155,7 @@ export default function ManageOrganisationAccessPage() {
   const onClientChange = (id: string) => {
     const selected = clients.find((c) => c.id === id);
     if (!selected) return;
-    if (selected && activeClient?.id !== selected.id) {
+    if (activeClient?.id !== selected.id) {
       handleClientChange(selected.id, selected.name);
     }
   };

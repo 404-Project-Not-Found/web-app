@@ -55,7 +55,7 @@ function useViewerRoleResolved(pathname: string): Role {
         if (r === 'family' || r === 'carer' || r === 'management') {
           setRole(r);
           try { sessionStorage.setItem('role', r); } catch {}
-          try { (window as any).__APP_ROLE__ = r; } catch {}
+          try { (window as any).__APP_ROLE__ = r; } catch {} 
           return;
         }
       } catch {}
